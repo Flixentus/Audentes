@@ -1,10 +1,20 @@
 import torch
 import torch.nn as nn
-from torch import Tensor
+import json
 
+from torch import Tensor
 from Attention import GroupedQueryAttention
 from Experts import Experts
 from Router import Router
+
+import os
+
+print(os.getcwd())
+print(os.listdir())
+
+with open("config.json", "r") as f:
+    config = json.load(f)
+
 
 class DecoderBlock(nn.Module):
     def __init__(self, d_model: int, num_heads: int, num_kv_heads: int, max_seq_len: int, d_ff: int, num_experts: int, top_k: int, capacity_factor: float, dropout: float):
@@ -35,15 +45,15 @@ class DecoderBlock(nn.Module):
         return X
 
 if __name__ == "__main__":
-    d_model = 512
-    num_heads = 8
-    num_kv_heads = 2
-    max_seq_len = 128
-    d_ff = 2048
-    num_experts = 4
-    top_k = 2
-    capacity_factor = 1.25
-    dropout = 0.1
+    d_model = config["d_model"]
+    num_heads = config["num_heads"]
+    num_kv_heads = config["num_kv_heads"]
+    max_seq_len = config["max_seq_len"]
+    d_ff = config["d_ff"]
+    num_experts = config["num_experts"]
+    top_k = config["top_k"]
+    capacity_factor = config["capacity_factor"]
+    dropout = config["dropout"]
 
     block = DecoderBlock(
         d_model,

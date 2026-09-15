@@ -1,0 +1,19 @@
+{
+    "d_model": 512,
+
+    "num_heads": 8,
+
+    "num_kv_heads": 2,
+
+    "max_seq_len": 128,
+
+    "d_ff": 2048,
+
+    "num_experts": 4,
+
+    "top_k": 2,
+
+    "capacity_factor": 1.25,
+    
+    "dropout": 0.1
+}
