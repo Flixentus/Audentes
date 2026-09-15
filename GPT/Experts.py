@@ -68,6 +68,26 @@ class Experts(nn.Module):
 
         return output, drop_rate
     
-    def forward(self, X: Tensor) -> Tensor:
-        pass # Abdelali khdmtk hadi hhhh
+    def forward(self, X: Tensor, top_k_experts: Tensor, top_k_probs: Tensor) -> tuple[Tensor, float]:
+
+        original_shape = X.shape # (batch_size, seq_len, d_model)
+
+        flattened_X = X.reshape(-1, X.size(-1)) # ((batch_size*seq_len), d_model)
+        flattened_top_k_experts = top_k_experts.reshape(-1, self.top_k) # now each row represents one token and the two values tell us which two experts were selected !
+        flattened_top_k_probs = top_k_probs.reshape(-1, self.top_k) # give us the probability of these two values 
+
+        flattened_token_ids = torch.arange(flattened_X.size(0), device=X.device).unsqueeze(1).expand(-1, self.top_k) # Track which original token each selected expert assignment belongs to
+
+        output, drop_rate = self.Token_Experts_Dispatch(
+            flattened_X,
+            flattened_token_ids,
+            flattened_top_k_experts,
+            flattened_top_k_probs
+            )   # Dispatch tokens to their selected experts and combine their outputs
+
+        output = output.reshape(original_shape) # # Reshape the output back to the original batch and sequence dimensions
+
+        return output, drop_rate
+
+        # Salit khdamti :)
                 
