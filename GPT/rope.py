@@ -36,8 +36,8 @@ class RoPE(nn.Module):
         
         # Apply the rotary encoding
         x1, x2 = X.chunk(2, dim=-1)
+
+        x1_new = x1 * cos - x2 * sin
+        x2_new = x1 * sin + x2 * cos  # ← Use original x1
         
-        x1 = x1 * cos - x2 * sin
-        x2 = x1 * sin + x2 * cos
-        
-        return torch.cat((x1, x2), dim=-1)
+        return torch.cat((x1_new, x2_new), dim=-1)
