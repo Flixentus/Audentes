@@ -11,7 +11,7 @@ class Router(nn.Module):
         self.router = nn.Linear(d_model, num_experts, bias=False)
         self.top_k = top_k
         
-    def forward(self, X: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def forward(self, X: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         # Compute the logits for each expert
         with torch.autocast(device_type=X.device.type, enabled=False):
             logits = self.router(X.float())  # (batch_size, seq_len, num_experts)
@@ -23,10 +23,11 @@ class Router(nn.Module):
         top_k_probs, top_k_experts = probs.topk(self.top_k, dim=-1)
         top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True) # Normalize to get probabilities
 
-        # Compute the load balance loss
+        # Compute the aux/ z losses
         aux_loss = self._load_balance_loss(probs, top_k_experts)
+        z_loss = self._z_loss(logits)
         
-        return top_k_experts, top_k_probs, aux_loss
+        return top_k_experts, top_k_probs, aux_loss, z_loss
     
     def _load_balance_loss(self, probs: Tensor, experts: Tensor) -> Tensor:
         """
@@ -43,5 +44,13 @@ class Router(nn.Module):
         
         # Return the load balance loss
         return num_experts * (f_i * P_i).sum()
+    
+    def _z_loss(self, logits: Tensor) -> Tensor:
+        """
+        loss = (1/seq_len) * Σ_t (logsumexp(logits_t))²
+        """
+        
+        log_z = torch.logsumexp(logits, dim=-1)
+        return (log_z ** 2).mean()
 
 
