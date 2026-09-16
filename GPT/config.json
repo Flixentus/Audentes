@@ -19,5 +19,8 @@
 
     "capacity_factor": 1.25,
     
-    "dropout": 0.1
+    "dropout": 0.1,
+
+    "num_layers": 6
+
 }
