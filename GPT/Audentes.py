@@ -11,6 +11,7 @@ from typing import cast
 class Audentes(nn.Module):
     def __init__(self, config_path: str | Path):
         super().__init__()
+
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)["Model"]
         
@@ -30,6 +31,7 @@ class Audentes(nn.Module):
         
         if kv_cache is None:
             kv_cache = cast(list[dict | None], [None] * len(self.blocks))
+            
         elif len(kv_cache) != len(self.blocks):
             raise ValueError("kv_cache must contain one entry per decoder block")
             
@@ -62,7 +64,8 @@ class Audentes(nn.Module):
         
         return (logits, new_cache, total_aux_loss, total_z_loss, avg_drop_rate)
 
-    #nawfallllljma33sawwfallll
+    # nawfallllljma33sawwfallll
     # 3tih l3assiiiir
+    # 3ab3ali 3awed dwz lpirmiiiiiiiii 
 
     

@@ -2,6 +2,10 @@ import json
 import os
 import requests
 import pandas as pd
+import pickle
+import random
+
+random.seed(42)
 
 # FinQA dataset URL
 url = "https://raw.githubusercontent.com/czyssrs/FinQA/main/dataset/train.json"
@@ -244,3 +248,30 @@ all_dataset = (
 
 print("Total dataset size:", len(all_dataset))
 
+# Shuffle the combined dataset
+random.shuffle(all_dataset)
+
+# 80/20 train/test split
+split_idx = int(0.8 * len(all_dataset))
+train_dataset = all_dataset[:split_idx]
+test_dataset = all_dataset[split_idx:]
+
+print(f"\nTrain set size: {len(train_dataset)}")
+print(f"Test set size: {len(test_dataset)}")
+
+# Ensure data directory exists
+os.makedirs("data", exist_ok=True)
+
+# Save train and test datasets as pickle files
+train_pkl_path = "data/ultrachat_train.pkl"
+test_pkl_path = "data/ultrachat_test.pkl"
+
+with open(train_pkl_path, "wb") as f:
+    pickle.dump(train_dataset, f)
+    print(f"\nTrain dataset saved to {train_pkl_path}")
+
+with open(test_pkl_path, "wb") as f:
+    pickle.dump(test_dataset, f)
+    print(f"Test dataset saved to {test_pkl_path}")
+
+print("\nDataset preparation complete!")
