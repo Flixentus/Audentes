@@ -79,29 +79,25 @@ def get_gradient_norm(model):
 
 
 class FinancialTextDataset(Dataset):
-    """Dataset wrapper for the merged financial datasets."""
-    
-    def __init__(self, data_list, tokenizer):
-        """
-        Args:
-            data_list: List of dicts with 'text' and 'source' keys
-            tokenizer: HuggingFace tokenizer for encoding
-        """
+    def __init__(self, data_list, tokenizer, seq_len=512):
         self.data = data_list
         self.tokenizer = tokenizer
-    
-    def __len__(self):
-        return len(self.data)
+        self.seq_len = seq_len
     
     def __getitem__(self, idx):
         item = self.data[idx]
         text = item["text"]
-        
-        # Tokenize the text
         encoded = self.tokenizer.encode(text)
         tokens = torch.tensor(encoded.ids, dtype=torch.long)
         
-        return tokens
+        # Pad or truncate to seq_len
+        if len(tokens) < self.seq_len:
+            tokens = torch.nn.functional.pad(tokens, (0, self.seq_len - len(tokens)))
+        else:
+            tokens = tokens[:self.seq_len]
+        
+        # For causal LM: input is seq[:-1], target is seq[1:]
+        return tokens[:-1], tokens[1:]  
 
 
 def evaluate(model, loader, criterion, device):
@@ -114,10 +110,9 @@ def evaluate(model, loader, criterion, device):
 
         for tgt in loader:
             tgt = tgt.to(device)
-            decoder_input = tgt[:, :-1]
             target = tgt[:, 1:]
 
-            logits = model(tgt, decoder_input)  
+            logits = model(tgt)  
 
             predictions = logits.argmax(dim=-1)
             mask = target != 0
@@ -181,14 +176,7 @@ def train():
         pin_memory=True
     )
 
-    model = Audentes(
-        actual_vocab_size,
-        config["d_model"],
-        config["num_heads"],
-        config["d_ff"],
-        0,
-        config["num_decoder_layers"],
-    ).to(device)
+    model = Audentes("config_path", actual_vocab_size).to(device)
 
     total_params = sum(
         p.numel() for p in model.parameters()
@@ -196,11 +184,8 @@ def train():
 
     experiment_config = {
         "model_type": config["model_type"],
-        "d_model": config["d_model"],
-        "layers": {
-            "encoder": config["num_encoder_layers"],
-            "decoder": config["num_decoder_layers"]
-        },
+        "d_model": config["d_model"], 
+        "decoder": config["num_layers"], 
         "vocab_size": actual_vocab_size,
         "parameters": total_params
     }
@@ -263,7 +248,7 @@ def train():
                 dtype=torch.bfloat16,
                 enabled=torch.cuda.is_available()
             ):
-                logits = model(x)
+                logits, _, aux_loss, z_loss, drop_rate = model(x) 
             
                 loss = criterion(
                     logits.reshape(-1, logits.size(-1)),

@@ -9,22 +9,23 @@ from pathlib import Path
 from typing import cast
 
 class Audentes(nn.Module):
-    def __init__(self, config_path: str | Path):
+    def __init__(self, config_path: str | Path, vocab_size):
         super().__init__()
 
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)["Model"]
-        
-        self.token_embedding = nn.Embedding(config["vocab_size"], config["d_model"])
+
+        self.d_model = config["d_model"]
+        self.num_heads = config["num_heads"]
+        self.d_ff = config["d_ff"]
+        self.num_decoder_layers = config["num_layers"]
+        self.vocab_size = vocab_size
+        self.token_embedding = nn.Embedding(vocab_size, config["d_model"])
         
         self.blocks = nn.ModuleList([DecoderBlock(d_model= config["d_model"], num_heads= config["num_heads"], num_kv_heads= config["num_kv_heads"], max_seq_len= config["max_seq_len"], d_ff= config["d_ff"], num_experts= config["num_experts"], top_k= config["top_k"], capacity_factor= config["capacity_factor"], rope_base= config["rope_base"] , dropout= config["dropout"], eps= float(config["eps"]))
                                      for _ in range(config["num_layers"])])
         
         self.final_norm = RMSNorm(config["d_model"], eps= float(config["eps"]))
-        self.lm_head = nn.Linear(config["d_model"], config["vocab_size"], bias= False)
-        
-        # Share the embedding weights
-        self.lm_head.weight = self.token_embedding.weight
 
     
     def forward(self, X: Tensor, offset: int = 0, kv_cache: list[dict | None] | None = None) -> tuple[Tensor, list[dict | None], Tensor, Tensor, float]:
