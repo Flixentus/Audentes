@@ -244,3 +244,12 @@ all_dataset = (
 
 print("Total dataset size:", len(all_dataset))
 
+print("\nFirst example:")
+print(all_dataset[0])
+
+print("\nLast example:")
+print(all_dataset[-1])
+
+print("\nTotal examples:")
+print(len(all_dataset))
+
