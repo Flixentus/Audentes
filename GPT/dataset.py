@@ -11,7 +11,7 @@ random.seed(42)
 os.makedirs("data", exist_ok=True)
 
 
-# CCNA dataset URL
+# CCNA dataset
 url = "https://huggingface.co/datasets/Rzkoohi/CCNA_medium/resolve/main/data/train-00000-of-00001.parquet"
 file_path = "data/ccna_medium.parquet"
 
@@ -30,7 +30,7 @@ else:
     print("CCNA already downloaded.")
 
 
-ccna = pd.read_parquet(file_path)  # Load the Parquet file
+ccna = pd.read_parquet(file_path)  # Load the dataset
 
 # Small test
 ccna = ccna.head(100)
@@ -38,17 +38,14 @@ ccna = ccna.head(100)
 print("Number of CCNA examples:", len(ccna))
 
 print("\nCCNA columns:")
-print(ccna.columns.tolist())  # Show the available columns
+print(ccna.columns.tolist())
 
 
 def format_ccna_example(example):
 
-    question = example["question"]  # Get the question
-    answer = example["answer"]  # Get the answer
+    question = example["question"]
+    answer = example["answer"]
 
-    # NEW:
-    # Instead of putting everything into one plain "text" field,
-    # we separate the user's question from the assistant's answer.
     return {
         "messages": [
             {
@@ -60,13 +57,13 @@ def format_ccna_example(example):
                 "content": str(answer)
             }
         ],
-        "source": "ccna"  # Keep track of where the example came from
+        "source": "ccna"
     }
 
 
 ccna_dataset = [
     format_ccna_example(row)
-    for _, row in ccna.iterrows()  # Go through each row
+    for _, row in ccna.iterrows()
 ]
 
 print("Clean CCNA size:", len(ccna_dataset))
@@ -75,19 +72,19 @@ print("\nFirst CCNA example:")
 print(json.dumps(ccna_dataset[0], indent=2, ensure_ascii=False))
 
 
-# NIT dataset URL
+# NIT dataset
 url = "https://huggingface.co/datasets/Smarneh/NIT/resolve/main/NIT_datset.json"
 file_path = "data/nit.json"
 
-if not os.path.exists(file_path):  # Check if the file already exists
+if not os.path.exists(file_path):
 
     print("\nDownloading NIT...")
 
-    response = requests.get(url)  # Download the dataset
-    response.raise_for_status()  # Stop if the download failed
+    response = requests.get(url)
+    response.raise_for_status()
 
     with open(file_path, "wb") as f:
-        f.write(response.content)  # Save the downloaded file
+        f.write(response.content)
 
     print("Download complete!")
 else:
@@ -95,7 +92,7 @@ else:
 
 
 with open(file_path, "r", encoding="utf-8") as f:
-    nit = json.load(f)  # Load the downloaded JSON data
+    nit = json.load(f)
 
 # Small test
 nit = nit[:100]
@@ -105,13 +102,10 @@ print("Number of NIT examples:", len(nit))
 
 def format_nit_example(example):
 
-    question = example["question"]  # Get the question
-    context = example["context"]  # Get the context
-    answer = example["answer"]  # Get the answer
+    question = example["question"]
+    context = example["context"]
+    answer = example["answer"]
 
-    # NEW:
-    # The question and context become the user's input.
-    # The answer becomes the assistant's response.
     user_message = (
         f"{question}\n\n"
         f"Context:\n"
@@ -129,7 +123,7 @@ def format_nit_example(example):
                 "content": str(answer)
             }
         ],
-        "source": "nit"  # Keep track of where the example came from
+        "source": "nit"
     }
 
 
@@ -144,10 +138,141 @@ print("\nFirst NIT example:")
 print(json.dumps(nit_dataset[0], indent=2, ensure_ascii=False))
 
 
+# Network Topology Troubleshooting dataset
+url = "https://huggingface.co/datasets/Mohamed77777777777777777777777777/network-topology-troubleshooting-dataset/resolve/main/train.csv"
+file_path = "data/network_topology.csv"
+
+if not os.path.exists(file_path):
+
+    print("\nDownloading Network Topology dataset...")
+
+    response = requests.get(url)
+    response.raise_for_status()
+
+    with open(file_path, "wb") as f:
+        f.write(response.content)
+
+    print("Download complete!")
+else:
+    print("Network Topology dataset already downloaded.")
+
+
+topology = pd.read_csv(file_path)
+
+# Small test
+topology = topology.head(100)
+
+print("Number of Topology examples:", len(topology))
+
+print("\nTopology columns:")
+print(topology.columns.tolist())
+
+
+def format_topology_example(example):
+
+    question = example["Question"]
+    response = example["Response"]
+    reasoning = example["Reasoning"]
+
+    answer = (
+        f"{response}\n\n"
+        f"Reasoning:\n"
+        f"{reasoning}"
+    )
+
+    return {
+        "messages": [
+            {
+                "role": "user",
+                "content": str(question)
+            },
+            {
+                "role": "assistant",
+                "content": str(answer)
+            }
+        ],
+        "source": "network_topology"
+    }
+
+
+topology_dataset = [
+    format_topology_example(row)
+    for _, row in topology.iterrows()
+]
+
+print("Clean Topology size:", len(topology_dataset))
+
+print("\nFirst Topology example:")
+print(json.dumps(topology_dataset[0], indent=2, ensure_ascii=False))
+
+
+# DDoS Security dataset
+url = "https://huggingface.co/datasets/sudiptob2/ddos-qna-dataset/resolve/main/data/train-00000-of-00001.parquet"
+file_path = "data/ddos_qna.parquet"
+
+if not os.path.exists(file_path):
+
+    print("\nDownloading DDoS dataset...")
+
+    response = requests.get(url)
+    response.raise_for_status()
+
+    with open(file_path, "wb") as f:
+        f.write(response.content)
+
+    print("Download complete!")
+else:
+    print("DDoS dataset already downloaded.")
+
+
+ddos = pd.read_parquet(file_path)
+
+# Small test
+ddos = ddos.head(100)
+
+print("Number of DDoS examples:", len(ddos))
+
+print("\nDDoS columns:")
+print(ddos.columns.tolist())
+
+
+def format_ddos_example(example):
+
+    question = example["title"]
+    answer = example["text"]
+
+    return {
+        "messages": [
+            {
+                "role": "user",
+                "content": str(question)
+            },
+            {
+                "role": "assistant",
+                "content": str(answer)
+            }
+        ],
+        "source": "ddos_security"
+    }
+
+
+ddos_dataset = [
+    format_ddos_example(row)
+    for _, row in ddos.iterrows()
+]
+
+print("Clean DDoS size:", len(ddos_dataset))
+
+print("\nFirst DDoS example:")
+print(json.dumps(ddos_dataset[0], indent=2, ensure_ascii=False))
+
+
 # Combine all datasets into one list
 all_dataset = (
     ccna_dataset
     + nit_dataset
+    + topology_dataset
+    + ddos_dataset
 )
 
 print("Total SFT dataset size:", len(all_dataset))
@@ -168,10 +293,7 @@ print(f"\nTrain set size: {len(train_dataset)}")
 print(f"Test set size: {len(test_dataset)}")
 
 
-# NEW:
-# Save as JSONL instead of pickle.
-# JSONL makes it easy for us and our teammates to inspect
-# individual examples and use them in the MoE training pipeline.
+# Save as JSONL
 train_path = "data/train.jsonl"
 test_path = "data/test.jsonl"
 
@@ -191,3 +313,4 @@ print(f"Test dataset saved to {test_path}")
 
 
 print("\nDataset preparation complete!")
+
