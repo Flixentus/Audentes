@@ -53,10 +53,20 @@ class GroupedQueryAttention(nn.Module):
             
         new_cache = {"K": K, "V": V}
         
-        # Compute attention output
+        # Apply a causal mask that accounts for cached keys.
         Q_len = Q.size(2)
         K_len = K.size(2)
-        attn_out = F.scaled_dot_product_attention(Q, K, V, is_causal= (Q_len == K_len), enable_gqa=True)
+        past_len = K_len - Q_len
+        if past_len < 0:
+            raise ValueError("kv_cache cannot contain fewer tokens than the current input")
+
+        if past_len == 0:
+            attn_out = F.scaled_dot_product_attention(Q, K, V, is_causal=True, enable_gqa=True)
+        else:
+            query_positions = torch.arange(Q_len, device=X.device).unsqueeze(1)
+            key_positions = torch.arange(K_len, device=X.device).unsqueeze(0)
+            causal_mask = key_positions <= past_len + query_positions
+            attn_out = F.scaled_dot_product_attention(Q, K, V, attn_mask=causal_mask, enable_gqa=True)
         
         # Transpose back and reshape
         attn_out = attn_out.transpose(1,2).contiguous().view(batch_size, seq_len, self.d_model)

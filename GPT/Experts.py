@@ -33,7 +33,7 @@ class Experts(nn.Module):
 
         # Capacity limit used in Mixture-of-Experts routing.
         # Each expert is allowed to process at most this many tokens.
-        capacity = int(self.capacity_factor * num_tokens * self.top_k // self.num_experts)
+        capacity = max(1, int(self.capacity_factor * num_tokens * self.top_k // self.num_experts))
 
         output = torch.zeros_like(flattened_X)
 
@@ -61,10 +61,10 @@ class Experts(nn.Module):
             expert_output = self.experts[expert](flattened_X[token_ids])
 
             # Accumulate weighted expert outputs back into their original token positions 
-            output.index_add_(0, token_ids, expert_output * weights.unsqueeze(-1))
+            output.index_add_(0, token_ids, expert_output * weights.to(expert_output.dtype).unsqueeze(-1))
 
         # Fraction of routed assignments that were dropped because of capacity constraints
-        drop_rate = dropped / (num_tokens * self.top_k)
+        drop_rate = dropped / (num_tokens * self.top_k) if num_tokens else 0.0
 
         return output, drop_rate
     
@@ -78,16 +78,12 @@ class Experts(nn.Module):
 
         flattened_token_ids = torch.arange(flattened_X.size(0), device=X.device).unsqueeze(1).expand(-1, self.top_k) # Track which original token each selected expert assignment belongs to
 
-        output, drop_rate = self.Token_Experts_Dispatch(
-            flattened_X,
-            flattened_token_ids,
-            flattened_top_k_experts,
-            flattened_top_k_probs
-            )   # Dispatch tokens to their selected experts and combine their outputs
+        output, drop_rate = self.Token_Experts_Dispatch(flattened_X, flattened_token_ids, flattened_top_k_experts, flattened_top_k_probs)   # Dispatch tokens to their selected experts and combine their outputs
 
         output = output.reshape(original_shape) # # Reshape the output back to the original batch and sequence dimensions
 
         return output, drop_rate
 
         # Salit khdamti :)
+        # 3ab3ali sbe3
                 
