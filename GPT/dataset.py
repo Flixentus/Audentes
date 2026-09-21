@@ -73,7 +73,7 @@ print(json.dumps(ccna_dataset[0], indent=2, ensure_ascii=False))
 
 
 # NIT dataset
-url = "https://huggingface.co/datasets/Smarneh/NIT/resolve/main/NIT_datset.json"
+url = "https://huggingface.co/datasets/Smarneh/NIT/resolve/main/NIT_dataset.json"
 file_path = "data/nit.json"
 
 if not os.path.exists(file_path):
@@ -206,73 +206,43 @@ print("\nFirst Topology example:")
 print(json.dumps(topology_dataset[0], indent=2, ensure_ascii=False))
 
 
-# DDoS Security dataset
-url = "https://huggingface.co/datasets/sudiptob2/ddos-qna-dataset/resolve/main/data/train-00000-of-00001.parquet"
-file_path = "data/ddos_qna.parquet"
+# Cisco IOS XR Q&A dataset
+url = "https://huggingface.co/datasets/ramixpe/sp_llama_simple/resolve/main/data/train-00000-of-00001.parquet"
+file_path = "data/iosxr.parquet"
 
 if not os.path.exists(file_path):
-
-    print("\nDownloading DDoS dataset...")
-
+    print("\nDownloading IOS XR...")
     response = requests.get(url)
     response.raise_for_status()
-
     with open(file_path, "wb") as f:
         f.write(response.content)
-
     print("Download complete!")
 else:
-    print("DDoS dataset already downloaded.")
+    print("IOS XR already downloaded.")
 
+df = pd.read_parquet(file_path)
+df = df.dropna(subset=["question", "answer"])
+df = df[df["answer"].str.len() > 20]                     # drop empty/tiny answers
+df = df[~df["question"].str.match(r"^[A-Za-z0-9_]+-\d-[A-Z_]+$")]  # drop bare error-code "questions"
+df = df.sample(n=100, random_state=42)                   # keep 100 for the smoke test
 
-ddos = pd.read_parquet(file_path)
-
-# Small test
-ddos = ddos.head(100)
-
-print("Number of DDoS examples:", len(ddos))
-
-print("\nDDoS columns:")
-print(ddos.columns.tolist())
-
-
-def format_ddos_example(example):
-
-    question = example["title"]
-    answer = example["text"]
-
-    return {
+iosxr_dataset = [
+    {
         "messages": [
-            {
-                "role": "user",
-                "content": str(question)
-            },
-            {
-                "role": "assistant",
-                "content": str(answer)
-            }
+            {"role": "user", "content": row["question"].strip()},
+            {"role": "assistant", "content": row["answer"].strip()},
         ],
-        "source": "ddos_security"
+        "source": "iosxr",
     }
-
-
-ddos_dataset = [
-    format_ddos_example(row)
-    for _, row in ddos.iterrows()
+    for _, row in df.iterrows()
 ]
-
-print("Clean DDoS size:", len(ddos_dataset))
-
-print("\nFirst DDoS example:")
-print(json.dumps(ddos_dataset[0], indent=2, ensure_ascii=False))
-
 
 # Combine all datasets into one list
 all_dataset = (
     ccna_dataset
     + nit_dataset
     + topology_dataset
-    + ddos_dataset
+    + iosxr_dataset
 )
 
 print("Total SFT dataset size:", len(all_dataset))
