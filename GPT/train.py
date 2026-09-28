@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
-from datasets import load_dataset
 import os
 import pickle
 from Audentes import Audentes
@@ -10,7 +9,6 @@ from torch.amp import autocast, GradScaler
 import json
 import time
 from tokenizers import Tokenizer as HFTokenizer
-from bpe_tokenizer import BPETokenizerWrapper
 import yaml
 
 
@@ -353,3 +351,6 @@ def train():
         model.state_dict(),
         os.path.join(LOCAL_DIR,"final_model.pt")
     )
+
+if __name__ == "__main__":
+    train()
