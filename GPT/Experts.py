@@ -28,46 +28,75 @@ class Experts(nn.Module):
         self.top_k = top_k
         self.capacity_factor = capacity_factor
         
-    def Token_Experts_Dispatch(self, flattened_X: Tensor, flattened_token_ids: Tensor, flattened_top_k_experts: Tensor, flattened_top_k_probs: Tensor) -> tuple[Tensor, float]:
+    def Token_Experts_Dispatch(
+        self,
+        flattened_X,
+        flattened_token_ids,
+        flattened_top_k_experts,
+        flattened_top_k_probs
+    ):
         num_tokens = flattened_X.size(0)
 
-        # Capacity limit used in Mixture-of-Experts routing.
-        # Each expert is allowed to process at most this many tokens.
-        capacity = max(1, int(self.capacity_factor * num_tokens * self.top_k // self.num_experts))
+        capacity = max(
+            1,
+            int(
+                self.capacity_factor
+                * num_tokens
+                * self.top_k
+                // self.num_experts
+            )
+        )
 
-        output = torch.zeros_like(flattened_X)
+        # Keep the dispatch buffer in BF16 to match A100 autocast.
+        output = torch.zeros(
+            flattened_X.shape,
+            device=flattened_X.device,
+            dtype=torch.bfloat16
+        )
 
-        # Track how many selected assignments were dropped due to capacity overflow
         dropped = 0
 
         for expert in range(self.num_experts):
-            # Select all token assignments that route to this expert
-            mask = (flattened_top_k_experts == expert)
+
+            mask = flattened_top_k_experts == expert
+
             token_ids = flattened_token_ids[mask]
             weights = flattened_top_k_probs[mask]
 
-            # keep only the highest-probability ones if exceed capacity
             if token_ids.size(0) > capacity:
                 keep = weights.topk(capacity).indices
+
                 dropped += token_ids.size(0) - capacity
+
                 token_ids = token_ids[keep]
                 weights = weights[keep]
 
-            # Nothing to do for this expert if no tokens routed here
             if token_ids.numel() == 0:
                 continue
 
-            # Pass to expert
-            expert_output = self.experts[expert](flattened_X[token_ids])
+            expert_output = self.experts[expert](
+                flattened_X[token_ids]
+            )
 
-            # Accumulate weighted expert outputs back into their original token positions 
-            output.index_add_(0, token_ids, expert_output * weights.to(expert_output.dtype).unsqueeze(-1))
+            weighted_output = (
+                expert_output.to(torch.bfloat16)
+                * weights.to(torch.bfloat16).unsqueeze(-1)
+            )
 
-        # Fraction of routed assignments that were dropped because of capacity constraints
-        drop_rate = dropped / (num_tokens * self.top_k) if num_tokens else 0.0
+            output.index_add_(
+                0,
+                token_ids,
+                weighted_output
+            )
+
+        drop_rate = (
+            dropped / (num_tokens * self.top_k)
+            if num_tokens
+            else 0.0
+        )
 
         return output, drop_rate
-    
+
     def forward(self, X: Tensor, top_k_experts: Tensor, top_k_probs: Tensor) -> tuple[Tensor, float]:
 
         original_shape = X.shape # (batch_size, seq_len, d_model)

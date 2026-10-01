@@ -1,356 +1,673 @@
+import os
+import time
+import pickle
+import json
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
 from torch.utils.data import DataLoader, Dataset
-import os
-import pickle
-from Audentes import Audentes
-import zipfile
 from torch.amp import autocast, GradScaler
-import json
-import time
-from tokenizers import Tokenizer as HFTokenizer
+from tokenizers import Tokenizer
+
 import yaml
 
-
-script_dir = os.path.dirname(os.path.abspath(__file__))
-config_path = os.path.join(script_dir, "config.yaml")
+from Audentes import Audentes
 
 
-with open(config_path, "r", encoding="utf-8") as f:
-    config = yaml.safe_load(f)["Model"]
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DATA_DIR = os.path.join(script_dir, "data")
-LOCAL_DIR = os.path.join(script_dir, "checkpoints")
+CONFIG_PATH = os.path.join(
+    SCRIPT_DIR,
+    "..",
+    "config.yaml"
+)
 
-tokenizer_path = os.path.join(
+DATA_DIR = os.path.join(
+    SCRIPT_DIR,
+    "data"
+)
+
+CHECKPOINT_DIR = "/content/drive/MyDrive/Audentes/checkpoints"
+
+TOKENIZER_PATH = os.path.join(
     DATA_DIR,
     "chat_bpe_tokenizer.json"
 )
+
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    config = yaml.safe_load(f)["Model"]
+
 
 torch.manual_seed(42)
 
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(42)
-    
-os.makedirs(LOCAL_DIR, exist_ok=True)
 
 
-def save_checkpoint_safely(checkpoint_data, filename):
-    """Save locally first, verify it's a valid file, then copy to Drive.
-    Never trust a save until it's been read back successfully."""
-    local_path = os.path.join(LOCAL_DIR, filename)
+class ChatDataset(Dataset):
 
-    torch.save(checkpoint_data, local_path)
+    def __init__(self, data, tokenizer, seq_len=512):
+        self.data = data
+        self.tokenizer = tokenizer
+        self.seq_len = seq_len
 
-    try:
-        with zipfile.ZipFile(local_path) as z:
-            z.namelist()  # forces a real read, not just open
-    except zipfile.BadZipFile:
-        print(f"WARNING: {filename} failed integrity check after saving locally — NOT copying to Drive.")
-        return False
+    def __len__(self):
+        return len(self.data)
 
-    print(f"Checkpoint verified and saved: {filename}")
-    return True
+    def __getitem__(self, idx):
 
+        tokens = self.tokenizer.encode(
+            self.data[idx]["text"]
+        ).ids
 
-def load_checkpoint_safely(filename):
-    """Try Drive first, fall back to local if Drive copy is bad."""
-    if os.path.exists(filename):
-        try:
-            with zipfile.ZipFile(filename) as z:
-                z.namelist()
-            return torch.load(filename, map_location="cpu")
-        except zipfile.BadZipFile:
-            print(f"WARNING: {filename} is corrupted, trying next option...")
-    return None
+        tokens = torch.tensor(
+            tokens,
+            dtype=torch.long
+        )
+
+        if len(tokens) < self.seq_len:
+
+            tokens = F.pad(
+                tokens,
+                (0, self.seq_len - len(tokens)),
+                value=0
+            )
+
+        else:
+            tokens = tokens[:self.seq_len]
+
+        return tokens[:-1], tokens[1:]
 
 
 def get_gradient_norm(model):
-    total_norm = 0.0
 
-    for p in model.parameters():
-        if p.grad is not None:
-            param_norm = p.grad.detach().data.norm(2)
-            total_norm += param_norm.item() ** 2
+    total = 0.0
 
-    return total_norm ** 0.5
+    for parameter in model.parameters():
 
+        if parameter.grad is not None:
 
-class FinancialTextDataset(Dataset):
-    def __init__(self, data_list, tokenizer, seq_len=512):
-        self.data = data_list
-        self.tokenizer = tokenizer
-        self.seq_len = seq_len
-    
-    def __getitem__(self, idx):
-        item = self.data[idx]
-        text = item["text"]
-        encoded = self.tokenizer.encode(text)
-        tokens = torch.tensor(encoded.ids, dtype=torch.long)
-        
-        # Pad or truncate to seq_len
-        if len(tokens) < self.seq_len:
-            tokens = torch.nn.functional.pad(tokens, (0, self.seq_len - len(tokens)))
-        else:
-            tokens = tokens[:self.seq_len]
-        
-        # For causal LM: input is seq[:-1], target is seq[1:]
-        return tokens[:-1], tokens[1:]  
+            total += (
+                parameter.grad.detach()
+                .norm(2)
+                .item()
+                ** 2
+            )
+
+    return total ** 0.5
 
 
-def evaluate(model, loader, criterion, device):
+def save_checkpoint(
+    model,
+    optimizer,
+    scheduler,
+    epoch
+):
+
+    path = os.path.join(
+        CHECKPOINT_DIR,
+        "checkpoint_latest.pt"
+    )
+
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "epoch": epoch
+        },
+        path
+    )
+
+    print(f"Checkpoint saved to: {path}")
+
+
+def evaluate(
+    model,
+    loader,
+    criterion,
+    device
+):
+
     model.eval()
-    total_loss = 0
+
+    total_loss = 0.0
     total_correct = 0
     total_tokens = 0
 
     with torch.no_grad():
 
-        for tgt in loader:
-            tgt = tgt.to(device)
-            target = tgt[:, 1:]
+        for x, y in loader:
 
-            logits = model(tgt)  
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+
+            with autocast(
+                device_type="cuda",
+                dtype=torch.bfloat16,
+                enabled=device.type == "cuda"
+            ):
+
+                logits, _, _, _, _ = model(x)
+
+                loss = criterion(
+                    logits.reshape(-1, logits.size(-1)),
+                    y.reshape(-1)
+                )
 
             predictions = logits.argmax(dim=-1)
-            mask = target != 0
-            correct = ((predictions ==  target) & mask).sum().item()
-            total = mask.sum().item()
 
-            loss = criterion(
-                logits.reshape(-1, logits.size(-1)),
-                target.reshape(-1)
-                )
+            mask = y != 0
+
+            total_correct += (
+                (predictions == y) & mask
+            ).sum().item()
+
+            total_tokens += mask.sum().item()
+
             total_loss += loss.item()
-            total_correct += correct
-            total_tokens += total
 
-        avg_loss = total_loss / len(loader)
-        accuracy = total_correct / total_tokens if total_tokens > 0 else 0
-        model.train()
-        return avg_loss, accuracy
+    avg_loss = total_loss / len(loader)
+
+    accuracy = (
+        total_correct / total_tokens
+        if total_tokens
+        else 0.0
+    )
+
+    model.train()
+
+    return avg_loss, accuracy
 
 def train():
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
+    device = torch.device(
+        "cuda" if torch.cuda.is_available()
+        else "cpu"
+    )
 
-    train_pkl_path = os.path.join(DATA_DIR, "ultrachat_train.pkl")
-    test_pkl_path = os.path.join(DATA_DIR, "ultrachat_test.pkl")
+    print("CUDA:", torch.cuda.is_available())
 
-    with open(train_pkl_path, "rb") as f:
+    if device.type == "cuda":
+
+        print(
+            "GPU:",
+            torch.cuda.get_device_name(0)
+        )
+
+        print(
+            "VRAM:",
+            round(
+                torch.cuda.get_device_properties(0)
+                .total_memory / 1024**3,
+                2
+            ),
+            "GB"
+        )
+
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+
+    with open(
+        os.path.join(DATA_DIR, "ultrachat_train.pkl"),
+        "rb"
+    ) as f:
         train_data = pickle.load(f)
 
-    with open(test_pkl_path, "rb") as f:
+
+    with open(
+        os.path.join(DATA_DIR, "ultrachat_test.pkl"),
+        "rb"
+    ) as f:
         test_data = pickle.load(f)
-    
-    hf_tokenizer = HFTokenizer.from_file(tokenizer_path)
-    actual_vocab_size = hf_tokenizer.get_vocab_size()
 
-    config["vocab_size"] = actual_vocab_size
 
-    print(f"Loaded tokenizer: {tokenizer_path}")
-    print(f"Actual vocab size: {actual_vocab_size}")
+    tokenizer = Tokenizer.from_file(
+        TOKENIZER_PATH
+    )
 
-    train_dataset = FinancialTextDataset(train_data, hf_tokenizer)
-    test_dataset = FinancialTextDataset(test_data, hf_tokenizer)
+    vocab_size = tokenizer.get_vocab_size()
 
-    loader = DataLoader(
+    print("Train examples:", len(train_data))
+    print("Test examples:", len(test_data))
+    print("Vocabulary:", vocab_size)
+
+
+    train_dataset = ChatDataset(
+        train_data,
+        tokenizer,
+        seq_len=512
+    )
+
+    test_dataset = ChatDataset(
+        test_data,
+        tokenizer,
+        seq_len=512
+    )
+
+
+    batch_size = int(
+        config["batch_size"]
+    )
+
+
+    train_loader = DataLoader(
         train_dataset,
-        batch_size=config["BATCH_SIZE"],
+        batch_size=batch_size,
         shuffle=True,
         num_workers=2,
         pin_memory=True,
         persistent_workers=True
     )
 
+
     test_loader = DataLoader(
         test_dataset,
-        batch_size=config["BATCH_SIZE"],
+        batch_size=batch_size,
         shuffle=False,
         num_workers=2,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True
     )
 
-    model = Audentes("config_path", actual_vocab_size).to(device)
+
+    model = Audentes(
+        CONFIG_PATH,
+        vocab_size
+    ).to(device)
+
 
     total_params = sum(
-        p.numel() for p in model.parameters()
+        p.numel()
+        for p in model.parameters()
     )
 
-    experiment_config = {
-        "model_type": config["model_type"],
-        "d_model": config["d_model"], 
-        "decoder": config["num_layers"], 
-        "vocab_size": actual_vocab_size,
-        "parameters": total_params
-    }
+    print(
+        f"Parameters: {total_params / 1e6:.2f}M"
+    )
 
-    json.dump(
-        experiment_config,
-        open(os.path.join(LOCAL_DIR,"experiment_config.json"),"w"),
-        indent=2
-    ) # hadi gha bach nb9aw msavin lconfig dial current experiment
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config["eps"])
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=1)
-    scaler = GradScaler("cuda", enabled=torch.cuda.is_available())
-    criterion = nn.CrossEntropyLoss(ignore_index=0)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(config["learning_rate"]),
+        weight_decay=0.1
+    )
+
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=1
+    )
+
+
+    scaler = GradScaler(
+        "cuda",
+        enabled=device.type == "cuda"
+    )
+
+
+    criterion = nn.CrossEntropyLoss(
+        ignore_index=0
+    )
+
 
     start_epoch = 0
-    start_batch_idx = 0
-    checkpoint = load_checkpoint_safely(os.path.join(LOCAL_DIR, "checkpoint_latest.pt"))
 
-    if checkpoint is not None:
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if "scheduler_state_dict" in checkpoint:
-            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    checkpoint_path = os.path.join(
+        CHECKPOINT_DIR,
+        "checkpoint_latest.pt"
+    )
+
+
+    if os.path.exists(checkpoint_path):
+
+        print("Loading checkpoint...")
+
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location="cpu"
+        )
+
+
+        model.load_state_dict(
+            checkpoint["model_state_dict"]
+        )
+
+        optimizer.load_state_dict(
+            checkpoint["optimizer_state_dict"]
+        )
+
+        scheduler.load_state_dict(
+            checkpoint["scheduler_state_dict"]
+        )
+
+
         start_epoch = checkpoint["epoch"] + 1
-        start_batch_idx = 0
 
-        print(f"Resuming from epoch {start_epoch + 1}, batch {start_batch_idx}")
+
+        print(
+            f"Resuming from epoch {start_epoch}"
+        )
+
     else:
-        print("No valid checkpoint found — starting fresh from epoch 1.")
 
-    for epoch in range(start_epoch, config["epochs"]):
-        if torch.cuda.is_available():
+        print(
+            "Starting fresh training."
+        )
+
+
+    accumulation_steps = int(
+        config["accumulation_steps"]
+    )
+
+
+    for epoch in range(
+        start_epoch,
+        int(config["epochs"])
+    ):
+
+        if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats()
-        epoch_start_time = time.time()
+
+
         model.train()
-        running_loss = 0
+
+        epoch_start = time.time()
+
+        running_loss = 0.0
+
         total_correct = 0
         total_tokens = 0
 
-        tokens_processed = 0
-        gradient_norm_sum = 0
+        gradient_norm_sum = 0.0
         gradient_steps = 0
 
-        optimizer.zero_grad(set_to_none=True)
-        last_grad_norm = 0.0
-        for batch_idx, (x, y) in enumerate(loader):
-            if epoch == start_epoch and batch_idx < start_batch_idx:
-                continue
+        optimizer.zero_grad(
+            set_to_none=True
+        )
+        for batch_idx, (x, y) in enumerate(train_loader):
 
-            x= x.to(device)
-            y= y.to(device)
+            x = x.to(
+                device,
+                non_blocking=True
+            )
 
-            tokens_processed += (x != 0).sum().item()
-            tokens_processed += (y != 0).sum().item()
+            y = y.to(
+                device,
+                non_blocking=True
+            )
 
 
             with autocast(
-                "cuda",
+                device_type="cuda",
                 dtype=torch.bfloat16,
-                enabled=torch.cuda.is_available()
+                enabled=device.type == "cuda"
             ):
-                logits, _, aux_loss, z_loss, drop_rate = model(x) 
-            
+
+                (
+                    logits,
+                    _,
+                    aux_loss,
+                    z_loss,
+                    drop_rate
+                ) = model(x)
+
+
                 loss = criterion(
-                    logits.reshape(-1, logits.size(-1)),
+                    logits.reshape(
+                        -1,
+                        logits.size(-1)
+                    ),
                     y.reshape(-1)
                 )
-            
-            
-            loss = loss / config["accumulation_steps"]
-            
-            scaler.scale(loss).backward()
-            
-            if (batch_idx + 1) % config["accumulation_steps"] == 0:
-            
-                scaler.unscale_(optimizer)
-            
-                grad_norm = get_gradient_norm(model)
-                last_grad_norm = grad_norm
-                gradient_norm_sum += grad_norm
-                gradient_steps += 1
-            
+
+
+            scaled_loss = (
+                loss / accumulation_steps
+            )
+
+            scaler.scale(
+                scaled_loss
+            ).backward()
+
+
+            if (
+                (batch_idx + 1) % accumulation_steps == 0
+                or batch_idx + 1 == len(train_loader)
+            ):
+
+                scaler.unscale_(
+                    optimizer
+                )
+
+
+                grad_norm = get_gradient_norm(
+                    model
+                )
+
+
                 torch.nn.utils.clip_grad_norm_(
                     model.parameters(),
                     max_norm=1.0
                 )
-            
-                scaler.step(optimizer)
+
+
+                scaler.step(
+                    optimizer
+                )
+
                 scaler.update()
-            
-                optimizer.zero_grad(set_to_none=True)
+
+
+                optimizer.zero_grad(
+                    set_to_none=True
+                )
+
+
+                gradient_norm_sum += grad_norm
+                gradient_steps += 1
+
 
             running_loss += loss.item()
 
-            predictions = logits.argmax(dim=-1)
-            mask = y != 0
-            correct = ((predictions == y) & mask).sum().item()
-            total = mask.sum().item()
 
-            total_correct += correct
-            total_tokens += total
-            accuracy = total_correct / total_tokens if total_tokens > 0 else 0
-
-            print(
-                f"Batch {batch_idx + 1} | "
-                f"Epoch {epoch+1} | "
-                f"Loss: {running_loss * 2 / (batch_idx + 1):.4f} | "
-                f"Accuracy: {accuracy:.2%} | "
-                f"Grad Norm: {last_grad_norm:.4f}"
+            predictions = logits.argmax(
+                dim=-1
             )
 
-        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
-        perplexity = torch.exp(torch.tensor(test_loss))
-        print(f"[Eval] Epoch {epoch+1} | test Loss: {test_loss:.4f} | test Accuracy: {test_acc:.2%} | test PPL: {perplexity:.2f}")
-        scheduler.step(test_loss)
-        print(optimizer.param_groups[0]['lr'])
+            mask = y != 0
 
-        epoch_elapsed = time.time() - epoch_start_time  
-        tokens_per_second = tokens_processed / epoch_elapsed
 
-        avg_gradient_norm = (
+            total_correct += (
+                (predictions == y) & mask
+            ).sum().item()
+
+
+            total_tokens += mask.sum().item()
+
+
+            accuracy = (
+                total_correct / total_tokens
+                if total_tokens
+                else 0.0
+            )
+
+
+            print(
+                f"Epoch {epoch + 1} | "
+                f"Batch {batch_idx + 1}/{len(train_loader)} | "
+                f"Loss {loss.item():.4f} | "
+                f"Accuracy {accuracy:.2%} | "
+                f"Drop {drop_rate:.2%}"
+            )
+
+
+        train_loss = (
+            running_loss / len(train_loader)
+        )
+
+
+        train_accuracy = (
+            total_correct / total_tokens
+            if total_tokens
+            else 0.0
+        )
+
+
+        test_loss, test_accuracy = evaluate(
+            model,
+            test_loader,
+            criterion,
+            device
+        )
+
+
+        scheduler.step(
+            test_loss
+        )
+
+
+        history_path = os.path.join(
+            CHECKPOINT_DIR,
+            "training_history.json"
+        )
+
+        history = []
+
+        if os.path.exists(history_path):
+
+            with open(
+                history_path,
+                "r"
+            ) as f:
+                history = json.load(f)
+
+
+        history.append(
+            {
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "test_loss": test_loss,
+                "train_accuracy": train_accuracy,
+                "test_accuracy": test_accuracy
+            }
+        )
+
+
+        with open(
+            history_path,
+            "w"
+        ) as f:
+            json.dump(
+                history,
+                f,
+                indent=2
+            )
+
+
+        perplexity = torch.exp(
+            torch.tensor(test_loss)
+        ).item()
+
+
+        elapsed = (
+            time.time() - epoch_start
+        )
+
+
+        avg_grad = (
             gradient_norm_sum / gradient_steps
-            if gradient_steps > 0
-            else 0
+            if gradient_steps
+            else 0.0
         )
 
-        if torch.cuda.is_available():
-            peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 3)
-        else:
-            peak_memory = 0      
 
-        hours, rem = divmod(epoch_elapsed, 3600)
-        minutes, seconds = divmod(rem, 60)
-        epoch_time_str = f"{int(hours)}h {int(minutes)}m {int(seconds)}s"  
-        train_loss_last = running_loss / len(loader)
-        train_acc_last = total_correct / total_tokens if total_tokens > 0 else 0
-
-        results_line = (
-            f"Epoch {epoch+1} | "
-            f"Total parameters: {total_params/1e6:.2f}M | "
-            f"Test Loss: {test_loss:.4f} | "
-            f"Test Accuracy: {test_acc:.2%} | "
-            f"Perplexity: {perplexity:.2f} | "
-            f"Train Loss: {train_loss_last:.4f} | "
-            f"Train Accuracy: {train_acc_last:.2%} | "
-            f"Time: {epoch_time_str} | "
-            f"Tokens/sec: {tokens_per_second:.2f} | "
-            f"Grad Norm: {avg_gradient_norm:.4f}\n"
+        peak_memory = (
+            torch.cuda.max_memory_allocated()
+            / 1024**3
+            if device.type == "cuda"
+            else 0.0
         )
 
-        local_results = os.path.join(LOCAL_DIR, "epoch_results.txt")
-        with open(local_results, "a") as f:
-            f.write(results_line)
 
-        checkpoint_data = {
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "epoch": epoch
-        }
-        save_checkpoint_safely(checkpoint_data, "checkpoint_latest.pt")
+        print("\n" + "=" * 60)
+
+        print(
+            f"Epoch {epoch + 1} complete"
+        )
+
+        print(
+            f"Train Loss: {train_loss:.4f}"
+        )
+
+        print(
+            f"Train Accuracy: {train_accuracy:.2%}"
+        )
+
+        print(
+            f"Test Loss: {test_loss:.4f}"
+        )
+
+        print(
+            f"Test Accuracy: {test_accuracy:.2%}"
+        )
+
+        print(
+            f"Perplexity: {perplexity:.2f}"
+        )
+
+        print(
+            f"Learning Rate: {optimizer.param_groups[0]['lr']}"
+        )
+
+        print(
+            f"Average Grad Norm: {avg_grad:.4f}"
+        )
+
+        print(
+            f"Peak VRAM: {peak_memory:.2f} GB"
+        )
+
+        print(
+            f"Time: {elapsed:.1f}s"
+        )
+
+        print("=" * 60 + "\n")
+
+
+        save_checkpoint(
+            model,
+            optimizer,
+            scheduler,
+            epoch
+        )
+
+
+    final_path = os.path.join(
+        CHECKPOINT_DIR,
+        "final_model.pt"
+    )
+
 
     torch.save(
         model.state_dict(),
-        os.path.join(LOCAL_DIR,"final_model.pt")
+        final_path
     )
+
+
+    print("Training complete.")
+    print(
+        f"Final model saved to: {final_path}"
+    )
+
 
 if __name__ == "__main__":
     train()
