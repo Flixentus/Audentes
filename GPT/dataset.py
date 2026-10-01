@@ -63,7 +63,7 @@ download(
     ccna_path, "CCNA"
 )
 
-ccna = pd.read_parquet(ccna_path).dropna(subset=["question", "answer"])
+ccna = pd.read_parquet(ccna_path, engine="fastparquet").dropna(subset=["question", "answer"])
 ccna = ccna.sample(min(CCNA_SIZE, len(ccna)), random_state=SEED)
 ccna_dataset = [
     make_example(row["question"], row["answer"], "ccna")
@@ -119,7 +119,7 @@ download(
     iosxr_path, "Cisco IOS XR"
 )
 
-iosxr = pd.read_parquet(iosxr_path).dropna(subset=["question", "answer"])
+iosxr = pd.read_parquet(iosxr_path, engine="fastparquet").dropna(subset=["question", "answer"])
 iosxr["question"] = iosxr["question"].astype(str)
 iosxr["answer"] = iosxr["answer"].astype(str)
 iosxr = iosxr[iosxr["answer"].str.len() > 20]
